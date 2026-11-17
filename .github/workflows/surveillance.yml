@@ -1,0 +1,36 @@
+
+name: Surveillance T1
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: surveillance-t1
+  cancel-in-progress: false
+
+jobs:
+  surveillance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+
+    steps:
+      - name: Recuperer les fichiers
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dependances
+        run: pip install -r requirements.txt
+
+      - name: Verifier les residences
+        env:
+          ENABLE_ALERTS: 'false'
+        run: python surveillance.py

@@ -1,4 +1,5 @@
 
+
 name: Surveillance T1
 
 on:
@@ -8,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: surveillance-t1
@@ -19,7 +21,7 @@ jobs:
     timeout-minutes: 4
 
     steps:
-      - name: Recuperer les fichiers
+      - name: Recuperer le code
         uses: actions/checkout@v4
 
       - name: Installer Python
@@ -30,7 +32,132 @@ jobs:
       - name: Installer les dependances
         run: pip install -r requirements.txt
 
-      - name: Verifier les residences
+      - name: Verifier et envoyer les alertes
         env:
-          ENABLE_ALERTS: 'false'
-        run: python surveillance.py
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          GH_REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import os
+          import json
+          import smtplib
+          import requests
+          from email.message import EmailMessage
+          import surveillance
+
+          api = "https://api.github.com/repos/" + os.environ["GH_REPOSITORY"] + "/issues"
+          headers = {
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json"
+          }
+          title = "[AUTO] Etat surveillance T1"
+
+          results = {}
+          errors = []
+
+          for name, url in surveillance.RESIDENCES.items():
+              try:
+                  status = surveillance.analyser_residence(name, url)
+                  print(f"RESULTAT FINAL {name}: {status}")
+                  if status == "INCONNU":
+                      errors.append(name)
+                  else:
+                      results[name] = status
+              except Exception as exc:
+                  errors.append(name)
+                  print(f"ERREUR {name}: {exc}")
+
+          response = requests.get(
+              api,
+              headers=headers,
+              params={"state": "all", "per_page": 100},
+              timeout=30
+          )
+          response.raise_for_status()
+
+          issue = next(
+              (item for item in response.json()
+               if item.get("title") == title
+               and "pull_request" not in item),
+              None
+          )
+
+          previous = {}
+          if issue:
+              try:
+                  previous = json.loads(issue.get("body") or "{}")
+              except ValueError:
+                  raise RuntimeError("Etat GitHub illisible")
+
+          changes = [
+              (name, surveillance.RESIDENCES[name])
+              for name, status in results.items()
+              if status == "DEMANDE_POTENTIELLE"
+              and previous.get(name) != "DEMANDE_POTENTIELLE"
+          ]
+
+          if not issue:
+              print("Premier passage : initialisation sans email.")
+          elif changes:
+              user = os.environ.get("SMTP_USER")
+              password = os.environ.get("SMTP_PASSWORD")
+              recipient = os.environ.get("ALERT_EMAIL")
+
+              if not all([user, password, recipient]):
+                  raise RuntimeError("Secrets email manquants")
+
+              message = EmailMessage()
+              message["Subject"] = "ALERTE : T1 potentiellement accessible"
+              message["From"] = user
+              message["To"] = recipient
+              message.set_content(
+                  "Un bouton de demande T1 semble actif :\n\n"
+                  + "\n\n".join(
+                      name + "\n" + url
+                      for name, url in changes
+                  )
+                  + "\n\nVérifie immédiatement sur le site."
+              )
+
+              with smtplib.SMTP_SSL(
+                  "smtp.gmail.com", 465, timeout=30
+              ) as smtp:
+                  smtp.login(user, password)
+                  smtp.send_message(message)
+
+              print("Email envoyé.")
+          else:
+              print("Aucune nouvelle demande détectée.")
+
+          if results:
+              current = dict(previous)
+              current.update(results)
+              payload = {"body": json.dumps(current)}
+
+              if issue:
+                  saved = requests.patch(
+                      api + "/" + str(issue["number"]),
+                      headers=headers,
+                      json=payload,
+                      timeout=30
+                  )
+              else:
+                  payload["title"] = title
+                  saved = requests.post(
+                      api,
+                      headers=headers,
+                      json=payload,
+                      timeout=30
+                  )
+
+              saved.raise_for_status()
+              print("Etat sauvegardé.")
+
+          if errors:
+              raise RuntimeError(
+                  "Verification incomplete : " + ", ".join(errors)
+              )
+          PY

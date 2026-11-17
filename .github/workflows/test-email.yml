@@ -1,0 +1,44 @@
+
+name: Test email Gmail
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-email:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Envoyer un email de test
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python - <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          user = os.environ["SMTP_USER"]
+          password = os.environ["SMTP_PASSWORD"]
+          recipient = os.environ["ALERT_EMAIL"]
+
+          message = EmailMessage()
+          message["Subject"] = "TEST - Surveillance T1"
+          message["From"] = user
+          message["To"] = recipient
+          message.set_content(
+              "Bonne nouvelle !\n\n"
+              "L'envoi des emails fonctionne correctement.\n"
+              "Ceci est uniquement un test technique.\n"
+              "Aucun logement disponible n'a été détecté."
+          )
+
+          with smtplib.SMTP_SSL(
+              "smtp.gmail.com", 465, timeout=30
+          ) as smtp:
+              smtp.login(user, password)
+              smtp.send_message(message)
+
+          print("EMAIL DE TEST ENVOYE AVEC SUCCES")
+          PY
